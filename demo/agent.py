@@ -1,6 +1,6 @@
 """A small tool-using agent, run in two modes:
 
-  protected=False -> raw Claude tool-use loop, no gateway. Used to demonstrate
+  protected=False -> raw Gemini tool-use loop, no gateway. Used to demonstrate
                       that the indirect-injection attack in fixtures.py actually
                       works against an unprotected agent.
   protected=True  -> every user input, tool output, and tool call passes through
@@ -16,7 +16,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-import anthropic
+from google import genai
+from google.genai import types
 
 from gateway import Decision, SecurityGateway
 from . import tools
@@ -27,7 +28,19 @@ SYSTEM_PROMPT = (
     "take actions the user actually asked for."
 )
 
-AGENT_MODEL = os.environ.get("DEMO_AGENT_MODEL", "claude-sonnet-5")
+AGENT_MODEL = os.environ.get("DEMO_AGENT_MODEL", "gemini-2.5-flash")
+
+# Translate our plain JSON-schema tool definitions (demo/tools.py) into Gemini
+# FunctionDeclaration objects once, at import time.
+_TOOL_DECLARATIONS = [
+    types.FunctionDeclaration(
+        name=schema["name"],
+        description=schema["description"],
+        parameters=schema["input_schema"],
+    )
+    for schema in tools.TOOL_SCHEMAS
+]
+_GEMINI_TOOLS = [types.Tool(function_declarations=_TOOL_DECLARATIONS)]
 
 
 @dataclass
@@ -40,12 +53,22 @@ class TurnLog:
 class DemoAgent:
     def __init__(self, protected: bool = True, confirm_callback=None, gateway: SecurityGateway | None = None):
         self.protected = protected
-        self.client = anthropic.Anthropic()
+        self._client = None  # lazily constructed -- don't require an API key just to build the object
         self.gateway = gateway or (SecurityGateway() if protected else None)
         # confirm_callback(tool_name, tool_args) -> bool ; defaults to auto-deny
         # so headless/eval runs never hang waiting on input()
         self.confirm_callback = confirm_callback or (lambda name, args: False)
-        self.messages: list[dict] = []
+        self.contents: list[types.Content] = []
+
+    @property
+    def client(self):
+        if self._client is None:
+            self._client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        return self._client
+
+    @client.setter
+    def client(self, value):
+        self._client = value
 
     def run_turn(self, user_text: str) -> list[TurnLog]:
         logs: list[TurnLog] = []
@@ -55,35 +78,36 @@ class DemoAgent:
             if result.matched:
                 logs.append(TurnLog(user_text, "input_flagged", result.to_dict()))
 
-        self.messages.append({"role": "user", "content": user_text})
+        self.contents.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
+
+        config = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, tools=_GEMINI_TOOLS)
 
         for _ in range(6):  # bound the tool-use loop
-            resp = self.client.messages.create(
+            resp = self.client.models.generate_content(
                 model=AGENT_MODEL,
-                max_tokens=1024,
-                system=SYSTEM_PROMPT,
-                tools=tools.TOOL_SCHEMAS,
-                messages=self.messages,
+                contents=self.contents,
+                config=config,
             )
 
-            self.messages.append({"role": "assistant", "content": resp.content})
+            candidate = resp.candidates[0]
+            self.contents.append(candidate.content)
 
-            tool_uses = [b for b in resp.content if b.type == "tool_use"]
-            text_blocks = [b.text for b in resp.content if b.type == "text"]
+            parts = candidate.content.parts or []
+            function_calls = [p.function_call for p in parts if getattr(p, "function_call", None)]
+            text_blocks = [p.text for p in parts if getattr(p, "text", None)]
             for t in text_blocks:
                 logs.append(TurnLog(t, "assistant_text"))
 
-            if resp.stop_reason != "tool_use" or not tool_uses:
+            if not function_calls:
                 break
 
-            tool_results = []
-            for tu in tool_uses:
-                out, log_entries = self._execute_tool(tu.name, tu.input)
+            response_parts = []
+            for fc in function_calls:
+                args = dict(fc.args) if fc.args else {}
+                out, log_entries = self._execute_tool(fc.name, args)
                 logs.extend(log_entries)
-                tool_results.append(
-                    {"type": "tool_result", "tool_use_id": tu.id, "content": out}
-                )
-            self.messages.append({"role": "user", "content": tool_results})
+                response_parts.append(types.Part.from_function_response(name=fc.name, response={"result": out}))
+            self.contents.append(types.Content(role="user", parts=response_parts))
 
         return logs
 

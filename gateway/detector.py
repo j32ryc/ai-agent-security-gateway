@@ -112,14 +112,15 @@ class InjectionDetector:
     def __init__(self, use_llm_judge: bool = True, client=None, judge_model: str | None = None):
         self.use_llm_judge = use_llm_judge
         self._client = client
-        self.judge_model = judge_model or os.environ.get("GATEWAY_JUDGE_MODEL", "claude-haiku-4-5-20251001")
+        self.judge_model = judge_model or os.environ.get("GATEWAY_JUDGE_MODEL", "gemini-2.5-flash")
 
     def _get_client(self):
         if self._client is not None:
             return self._client
-        import anthropic  # local import so the package is optional if judge is disabled
+        from google import genai  # local import so the package is optional if judge is disabled
 
-        self._client = anthropic.Anthropic()
+        api_key = os.environ.get("GEMINI_API_KEY")
+        self._client = genai.Client(api_key=api_key)
         return self._client
 
     def _heuristic_scan(self, text: str) -> DetectionResult:
@@ -153,17 +154,20 @@ class InjectionDetector:
         )
 
     def _llm_judge_scan(self, text: str) -> DetectionResult:
+        from google.genai import types
+
         client = self._get_client()
         try:
-            resp = client.messages.create(
+            resp = client.models.generate_content(
                 model=self.judge_model,
-                max_tokens=200,
-                system=_JUDGE_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": f"<content>\n{text}\n</content>"}],
+                contents=f"<content>\n{text}\n</content>",
+                config=types.GenerateContentConfig(
+                    system_instruction=_JUDGE_SYSTEM_PROMPT,
+                    max_output_tokens=200,
+                    response_mime_type="application/json",
+                ),
             )
-            raw = resp.content[0].text.strip()
-            # tolerate models that wrap JSON in a code fence
-            raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.M).strip()
+            raw = (resp.text or "").strip()
             data = json.loads(raw)
             return DetectionResult(
                 matched=bool(data.get("is_injection")),

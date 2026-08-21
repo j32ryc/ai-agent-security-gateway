@@ -79,7 +79,8 @@ the fact rather than only alerted on in real time.
 
 ```bash
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=sk-ant-...   # required for the demo agent and the LLM-judge layer
+export GEMINI_API_KEY=...   # required for the demo agent and the LLM-judge layer
+                             # free key, no card required: https://aistudio.google.com/apikey
 ```
 
 **CLI demo** — runs the poisoned-ticket scenario once unprotected, once
@@ -162,7 +163,7 @@ gateway/            # the reusable security layer
 demo/                # a small tool-using agent to exercise the gateway against
   tools.py             mock file/email/search tools (sandboxed, safe to run)
   fixtures.py          canned data, including one indirect-injection payload
-  agent.py             Claude tool-use loop, protected/unprotected modes
+  agent.py             Gemini tool-use loop, protected/unprotected modes
   run_cli.py           interactive CLI + scripted attack scenario
 
 attacks/             # labeled test corpus + precision/recall eval
@@ -172,5 +173,5 @@ app.py               # Streamlit dashboard
 
 ## Tech stack
 
-Python, [Anthropic API](https://docs.anthropic.com/) (Claude, tool use),
+Python, [Gemini API](https://ai.google.dev/) (`google-genai`, function calling),
 Streamlit, SQLite, pytest.
