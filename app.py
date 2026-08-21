@@ -9,6 +9,10 @@ Toggle "Gateway enabled" off to see the same attack succeed unprotected.
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import streamlit as st
 
 from demo import tools

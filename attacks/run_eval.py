@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import argparse
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from gateway.detector import InjectionDetector
 from attacks.payloads import CASES
 

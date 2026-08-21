@@ -163,8 +163,14 @@ class InjectionDetector:
                 contents=f"<content>\n{text}\n</content>",
                 config=types.GenerateContentConfig(
                     system_instruction=_JUDGE_SYSTEM_PROMPT,
-                    max_output_tokens=200,
+                    max_output_tokens=500,
                     response_mime_type="application/json",
+                    # This is a short classification task -- extended thinking just
+                    # burns the output token budget on hidden reasoning tokens and,
+                    # on some model generations, can starve the actual JSON response
+                    # down to nothing. Not every model version honors this field;
+                    # harmless no-op when it doesn't.
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
                 ),
             )
             raw = (resp.text or "").strip()

@@ -81,7 +81,12 @@ UNTRUSTED_OUTPUT_TOOLS = {"web_search", "read_file"}
 TOOL_SCHEMAS = [
     {
         "name": "web_search",
-        "description": "Search the web and return short result snippets.",
+        "description": (
+            "Search the web AND the company's internal knowledge base (support "
+            "tickets, help center articles, policy pages) and return short result "
+            "snippets. Use this for any lookup you can't answer from the "
+            "conversation alone, including support ticket numbers."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {"query": {"type": "string"}},

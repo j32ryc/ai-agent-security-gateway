@@ -24,8 +24,10 @@ from . import tools
 
 SYSTEM_PROMPT = (
     "You are a helpful personal assistant with access to file, email, and web "
-    "search tools. Use tools when needed to answer the user's request. Only "
-    "take actions the user actually asked for."
+    "search tools. Always use a tool to look something up rather than saying you "
+    "can't -- for example, use web_search for support tickets, documentation, or "
+    "anything else not already in the conversation. Only take actions the user "
+    "actually asked for."
 )
 
 AGENT_MODEL = os.environ.get("DEMO_AGENT_MODEL", "gemini-2.5-flash")
@@ -80,7 +82,9 @@ class DemoAgent:
 
         self.contents.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
 
-        config = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, tools=_GEMINI_TOOLS)
+        config = types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT, tools=_GEMINI_TOOLS, temperature=0
+        )
 
         for _ in range(6):  # bound the tool-use loop
             resp = self.client.models.generate_content(
