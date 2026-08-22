@@ -31,7 +31,11 @@ class AuditLog:
         self.db_path = db_path
         self.session_id = session_id or str(uuid.uuid4())[:8]
         Path(db_path).parent.mkdir(parents=True, exist_ok=True) if Path(db_path).parent != Path(".") else None
-        self._conn = sqlite3.connect(db_path)
+        # check_same_thread=False: Streamlit reruns the script on a worker thread
+        # that can differ from the one that created this connection, even within
+        # a single user session. Access here is still effectively sequential (one
+        # script rerun at a time per session), so this is safe.
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute(_SCHEMA)
         self._conn.commit()
 

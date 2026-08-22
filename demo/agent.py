@@ -1,6 +1,6 @@
 """A small tool-using agent, run in two modes:
 
-  protected=False -> raw Gemini tool-use loop, no gateway. Used to demonstrate
+  protected=False -> raw DeepSeek tool-use loop, no gateway. Used to demonstrate
                       that the indirect-injection attack in fixtures.py actually
                       works against an unprotected agent.
   protected=True  -> every user input, tool output, and tool call passes through
@@ -13,11 +13,11 @@ same attack, different outcome.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 
-from google import genai
-from google.genai import types
+from openai import OpenAI
 
 from gateway import Decision, SecurityGateway
 from . import tools
@@ -30,19 +30,27 @@ SYSTEM_PROMPT = (
     "actually asked for."
 )
 
-AGENT_MODEL = os.environ.get("DEMO_AGENT_MODEL", "gemini-2.5-flash")
+# deepseek-v4-flash is the default here deliberately, not for cost reasons: in
+# testing, deepseek-v4-pro consistently recognized and refused the fixture's
+# injection payload outright (see README "Model behavior notes"), which makes
+# the --unprotected demo scenario a no-op with nothing to show. flash is where
+# the actual excessive-agency risk this project defends against shows up.
+# Override with DEMO_AGENT_MODEL=deepseek-v4-pro to see the more resistant case.
+AGENT_MODEL = os.environ.get("DEMO_AGENT_MODEL", "deepseek-v4-flash")
 
-# Translate our plain JSON-schema tool definitions (demo/tools.py) into Gemini
-# FunctionDeclaration objects once, at import time.
-_TOOL_DECLARATIONS = [
-    types.FunctionDeclaration(
-        name=schema["name"],
-        description=schema["description"],
-        parameters=schema["input_schema"],
-    )
+# Translate our plain JSON-schema tool definitions (demo/tools.py) into the
+# OpenAI-style tools param DeepSeek's API expects.
+_OPENAI_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": schema["name"],
+            "description": schema["description"],
+            "parameters": schema["input_schema"],
+        },
+    }
     for schema in tools.TOOL_SCHEMAS
 ]
-_GEMINI_TOOLS = [types.Tool(function_declarations=_TOOL_DECLARATIONS)]
 
 
 @dataclass
@@ -60,12 +68,15 @@ class DemoAgent:
         # confirm_callback(tool_name, tool_args) -> bool ; defaults to auto-deny
         # so headless/eval runs never hang waiting on input()
         self.confirm_callback = confirm_callback or (lambda name, args: False)
-        self.contents: list[types.Content] = []
+        self.messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     @property
     def client(self):
         if self._client is None:
-            self._client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+            self._client = OpenAI(
+                api_key=os.environ.get("DEEPSEEK_API_KEY"),
+                base_url="https://api.deepseek.com",
+            )
         return self._client
 
     @client.setter
@@ -80,38 +91,46 @@ class DemoAgent:
             if result.matched:
                 logs.append(TurnLog(user_text, "input_flagged", result.to_dict()))
 
-        self.contents.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
-
-        config = types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT, tools=_GEMINI_TOOLS, temperature=0
-        )
+        self.messages.append({"role": "user", "content": user_text})
 
         for _ in range(6):  # bound the tool-use loop
-            resp = self.client.models.generate_content(
+            resp = self.client.chat.completions.create(
                 model=AGENT_MODEL,
-                contents=self.contents,
-                config=config,
+                messages=self.messages,
+                tools=_OPENAI_TOOLS,
+                temperature=0,
+                # Extended thinking mode has been observed to intermittently break
+                # structured tool_calls output on DeepSeek V4 -- disable it for a
+                # more reliable tool-use loop.
+                extra_body={"thinking": {"type": "disabled"}},
             )
 
-            candidate = resp.candidates[0]
-            self.contents.append(candidate.content)
+            msg = resp.choices[0].message
 
-            parts = candidate.content.parts or []
-            function_calls = [p.function_call for p in parts if getattr(p, "function_call", None)]
-            text_blocks = [p.text for p in parts if getattr(p, "text", None)]
-            for t in text_blocks:
-                logs.append(TurnLog(t, "assistant_text"))
+            assistant_entry = {"role": "assistant", "content": msg.content}
+            if msg.tool_calls:
+                assistant_entry["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for tc in msg.tool_calls
+                ]
+            self.messages.append(assistant_entry)
 
-            if not function_calls:
+            if msg.content:
+                logs.append(TurnLog(msg.content, "assistant_text"))
+
+            if not msg.tool_calls:
                 break
 
-            response_parts = []
-            for fc in function_calls:
-                args = dict(fc.args) if fc.args else {}
-                out, log_entries = self._execute_tool(fc.name, args)
+            for tc in msg.tool_calls:
+                name = tc.function.name
+                args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                out, log_entries = self._execute_tool(name, args)
                 logs.extend(log_entries)
-                response_parts.append(types.Part.from_function_response(name=fc.name, response={"result": out}))
-            self.contents.append(types.Content(role="user", parts=response_parts))
+                self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
 
         return logs
 

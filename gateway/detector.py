@@ -112,15 +112,17 @@ class InjectionDetector:
     def __init__(self, use_llm_judge: bool = True, client=None, judge_model: str | None = None):
         self.use_llm_judge = use_llm_judge
         self._client = client
-        self.judge_model = judge_model or os.environ.get("GATEWAY_JUDGE_MODEL", "gemini-2.5-flash")
+        self.judge_model = judge_model or os.environ.get("GATEWAY_JUDGE_MODEL", "deepseek-v4-flash")
 
     def _get_client(self):
         if self._client is not None:
             return self._client
-        from google import genai  # local import so the package is optional if judge is disabled
+        from openai import OpenAI  # local import so the package is optional if judge is disabled
 
-        api_key = os.environ.get("GEMINI_API_KEY")
-        self._client = genai.Client(api_key=api_key)
+        self._client = OpenAI(
+            api_key=os.environ.get("DEEPSEEK_API_KEY"),
+            base_url="https://api.deepseek.com",
+        )
         return self._client
 
     def _heuristic_scan(self, text: str) -> DetectionResult:
@@ -154,26 +156,24 @@ class InjectionDetector:
         )
 
     def _llm_judge_scan(self, text: str) -> DetectionResult:
-        from google.genai import types
-
         client = self._get_client()
         try:
-            resp = client.models.generate_content(
+            resp = client.chat.completions.create(
                 model=self.judge_model,
-                contents=f"<content>\n{text}\n</content>",
-                config=types.GenerateContentConfig(
-                    system_instruction=_JUDGE_SYSTEM_PROMPT,
-                    max_output_tokens=500,
-                    response_mime_type="application/json",
-                    # This is a short classification task -- extended thinking just
-                    # burns the output token budget on hidden reasoning tokens and,
-                    # on some model generations, can starve the actual JSON response
-                    # down to nothing. Not every model version honors this field;
-                    # harmless no-op when it doesn't.
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
-                ),
+                messages=[
+                    {"role": "system", "content": _JUDGE_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"<content>\n{text}\n</content>"},
+                ],
+                max_tokens=500,
+                response_format={"type": "json_object"},
+                # This is a short classification task -- extended thinking mode
+                # burns the output token budget on hidden reasoning tokens and can
+                # break structured JSON output entirely (observed on DeepSeek V4 and
+                # on Gemini's "thinking" models alike). Disable it explicitly rather
+                # than relying on the default.
+                extra_body={"thinking": {"type": "disabled"}},
             )
-            raw = (resp.text or "").strip()
+            raw = (resp.choices[0].message.content or "").strip()
             data = json.loads(raw)
             return DetectionResult(
                 matched=bool(data.get("is_injection")),
