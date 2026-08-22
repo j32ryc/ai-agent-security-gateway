@@ -1,5 +1,7 @@
 # AI Agent Security Gateway
 
+[![tests](https://github.com/j32ryc/ai-agent-security-gateway/actions/workflows/test.yml/badge.svg)](https://github.com/j32ryc/ai-agent-security-gateway/actions/workflows/test.yml)
+
 A middleware layer for tool-using LLM agents that detects prompt injection and
 enforces a risk-tiered policy on tool calls, with a full audit trail — applying
 security-monitoring practice (detect → triage → enforce → log) to a class of
