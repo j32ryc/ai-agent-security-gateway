@@ -17,9 +17,8 @@ import json
 import os
 from dataclasses import dataclass, field
 
-from openai import OpenAI
-
 from gateway import Decision, SecurityGateway
+from gateway import providers
 from . import tools
 
 SYSTEM_PROMPT = (
@@ -36,7 +35,12 @@ SYSTEM_PROMPT = (
 # the --unprotected demo scenario a no-op with nothing to show. flash is where
 # the actual excessive-agency risk this project defends against shows up.
 # Override with DEMO_AGENT_MODEL=deepseek-v4-pro to see the more resistant case.
+#
+# The provider is inferred from the model name (see gateway/providers.py), so
+# cross-provider runs need only this one variable:
+#   DEMO_AGENT_MODEL=gemini-2.5-flash python -m demo.run_cli ...
 AGENT_MODEL = os.environ.get("DEMO_AGENT_MODEL", "deepseek-v4-flash")
+AGENT_PROVIDER = os.environ.get("DEMO_AGENT_PROVIDER")  # optional override
 
 # Translate our plain JSON-schema tool definitions (demo/tools.py) into the
 # OpenAI-style tools param DeepSeek's API expects.
@@ -73,10 +77,7 @@ class DemoAgent:
     @property
     def client(self):
         if self._client is None:
-            self._client = OpenAI(
-                api_key=os.environ.get("DEEPSEEK_API_KEY"),
-                base_url="https://api.deepseek.com",
-            )
+            self._client = providers.make_client(AGENT_MODEL, AGENT_PROVIDER)
         return self._client
 
     @client.setter
@@ -99,25 +100,23 @@ class DemoAgent:
                 messages=self.messages,
                 tools=_OPENAI_TOOLS,
                 temperature=0,
-                # Extended thinking mode has been observed to intermittently break
-                # structured tool_calls output on DeepSeek V4 -- disable it for a
-                # more reliable tool-use loop.
-                extra_body={"thinking": {"type": "disabled"}},
+                # Extended thinking has been observed to intermittently break
+                # structured tool_calls output on both providers; providers.py
+                # supplies whichever form of "don't think" each one accepts.
+                **providers.completion_kwargs(AGENT_MODEL, AGENT_PROVIDER),
             )
 
             msg = resp.choices[0].message
 
-            assistant_entry = {"role": "assistant", "content": msg.content}
-            if msg.tool_calls:
-                assistant_entry["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                    }
-                    for tc in msg.tool_calls
-                ]
-            self.messages.append(assistant_entry)
+            # Echo the assistant message back verbatim rather than rebuilding it
+            # from the fields we happen to care about. Providers attach their own
+            # metadata to tool calls and expect to receive it again on the next
+            # turn: Gemini 3.x rejects the follow-up request outright with
+            # "Function call is missing a thought_signature in functionCall parts"
+            # if that field was dropped, which is what a hand-rolled dict does.
+            # model_dump keeps provider extensions we don't know about, and is
+            # equally valid for DeepSeek since it only replays what DeepSeek sent.
+            self.messages.append(msg.model_dump(exclude_none=True))
 
             if msg.content:
                 logs.append(TurnLog(msg.content, "assistant_text"))
