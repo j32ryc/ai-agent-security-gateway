@@ -6,3 +6,4 @@ venv/
 *.db
 .DS_Store
 demo/sandbox/
+agentdojo_runs/
